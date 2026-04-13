@@ -1,5 +1,8 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import Icon from "@/components/ui/icon";
+
+const AUTH_URL = "https://functions.poehali.dev/ba57eaf4-95b1-4d3d-8b90-247ea302d686";
+const TASKS_URL = "https://functions.poehali.dev/25c9e8c4-db7f-4c69-bb69-acf4e5e76b22";
 
 type Priority = "low" | "medium" | "high";
 type Category = "work" | "personal" | "health" | "finance" | "other";
@@ -7,14 +10,23 @@ type TaskStatus = "active" | "done";
 type Tab = "tasks" | "deadlines" | "stats" | "categories" | "profile";
 
 interface Task {
-  id: string;
+  id: number;
   title: string;
   description?: string;
   priority: Priority;
   category: Category;
   status: TaskStatus;
-  dueDate?: string;
-  createdAt: string;
+  due_date?: string;
+  is_shared: boolean;
+  owner_id: number;
+  owner_name: string;
+  created_at: string;
+}
+
+interface User {
+  id: number;
+  username: string;
+  display_name: string;
 }
 
 const CATEGORIES: Record<Category, { label: string; color: string }> = {
@@ -31,107 +43,231 @@ const PRIORITIES: Record<Priority, { label: string; dot: string }> = {
   low: { label: "Низкий", dot: "bg-gray-300" },
 };
 
-const SAMPLE_TASKS: Task[] = [
-  { id: "1", title: "Подготовить отчёт за квартал", priority: "high", category: "work", status: "active", dueDate: "2026-04-15", createdAt: "2026-04-10" },
-  { id: "2", title: "Оплатить счёт за интернет", priority: "medium", category: "finance", status: "active", dueDate: "2026-04-14", createdAt: "2026-04-11" },
-  { id: "3", title: "Запись к врачу", priority: "medium", category: "health", status: "done", createdAt: "2026-04-09" },
-  { id: "4", title: "Созвон с командой в 15:00", priority: "high", category: "work", status: "active", dueDate: "2026-04-13", createdAt: "2026-04-12" },
-  { id: "5", title: "Пробежка в парке", priority: "low", category: "health", status: "active", createdAt: "2026-04-12" },
-  { id: "6", title: "Прочитать книгу «Атомные привычки»", priority: "low", category: "personal", status: "done", createdAt: "2026-04-08" },
-];
-
-function useLocalStorage<T>(key: string, initial: T) {
-  const [value, setValue] = useState<T>(() => {
-    try {
-      const item = localStorage.getItem(key);
-      return item ? JSON.parse(item) : initial;
-    } catch {
-      return initial;
-    }
-  });
-  useEffect(() => { localStorage.setItem(key, JSON.stringify(value)); }, [key, value]);
-  return [value, setValue] as const;
+function authFetch(action: string, data: Record<string, unknown> = {}, sessionId?: string) {
+  return fetch(AUTH_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(sessionId ? { "X-Session-Id": sessionId } : {}) },
+    body: JSON.stringify({ action, ...data }),
+  }).then(r => r.json());
 }
 
+function tasksFetch(action: string, data: Record<string, unknown> = {}, sessionId: string) {
+  return fetch(TASKS_URL, {
+    method: action === "list" ? "GET" : "POST",
+    headers: { "Content-Type": "application/json", "X-Session-Id": sessionId },
+    body: action === "list" ? undefined : JSON.stringify({ action, ...data }),
+  }).then(r => r.json());
+}
+
+// ─── Auth Screen ───────────────────────────────────────────────────
+function AuthScreen({ onLogin }: { onLogin: (user: User, sessionId: string) => void }) {
+  const [mode, setMode] = useState<"login" | "register">("login");
+  const [form, setForm] = useState({ username: "", password: "", display_name: "" });
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const submit = async () => {
+    setError("");
+    setLoading(true);
+    const res = await authFetch(mode, form);
+    setLoading(false);
+    if (res.error) { setError(res.error); return; }
+    onLogin(res.user, res.session_id);
+  };
+
+  return (
+    <div className="min-h-screen bg-[#f5f5f5] flex items-center justify-center px-4" style={{ fontFamily: "'Golos Text', sans-serif" }}>
+      <div className="w-full max-w-sm">
+        <div className="flex items-center gap-2 mb-8 justify-center">
+          <div className="w-9 h-9 rounded-xl bg-[hsl(var(--foreground))] flex items-center justify-center">
+            <Icon name="CheckSquare" size={18} className="text-white" />
+          </div>
+          <span className="font-bold text-xl tracking-tight">Задачи</span>
+        </div>
+
+        <div className="bg-white rounded-2xl border border-[hsl(var(--border))] p-6 shadow-sm">
+          <div className="flex gap-1 bg-[hsl(var(--muted))] rounded-xl p-1 mb-5">
+            {(["login", "register"] as const).map(m => (
+              <button
+                key={m}
+                onClick={() => { setMode(m); setError(""); }}
+                className={`flex-1 py-2 text-sm font-medium rounded-lg transition-all ${mode === m ? "bg-white shadow-sm text-[hsl(var(--foreground))]" : "text-[hsl(var(--muted-foreground))]"}`}
+              >
+                {m === "login" ? "Войти" : "Регистрация"}
+              </button>
+            ))}
+          </div>
+
+          <div className="space-y-3">
+            {mode === "register" && (
+              <input
+                className="w-full border border-[hsl(var(--border))] rounded-xl px-4 py-2.5 text-sm outline-none focus:border-[hsl(var(--foreground))] transition-colors"
+                placeholder="Имя"
+                value={form.display_name}
+                onChange={e => setForm(f => ({ ...f, display_name: e.target.value }))}
+              />
+            )}
+            <input
+              className="w-full border border-[hsl(var(--border))] rounded-xl px-4 py-2.5 text-sm outline-none focus:border-[hsl(var(--foreground))] transition-colors"
+              placeholder="Логин"
+              value={form.username}
+              onChange={e => setForm(f => ({ ...f, username: e.target.value }))}
+              autoCapitalize="none"
+            />
+            <input
+              type="password"
+              className="w-full border border-[hsl(var(--border))] rounded-xl px-4 py-2.5 text-sm outline-none focus:border-[hsl(var(--foreground))] transition-colors"
+              placeholder="Пароль"
+              value={form.password}
+              onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
+              onKeyDown={e => e.key === "Enter" && submit()}
+            />
+          </div>
+
+          {error && <p className="text-xs text-red-500 mt-3">{error}</p>}
+
+          <button
+            onClick={submit}
+            disabled={loading}
+            className="w-full mt-4 bg-[hsl(var(--foreground))] text-white py-3 rounded-xl text-sm font-medium disabled:opacity-50 hover:opacity-90 transition-opacity"
+          >
+            {loading ? "..." : mode === "login" ? "Войти" : "Создать аккаунт"}
+          </button>
+        </div>
+
+        <p className="text-center text-xs text-[hsl(var(--muted-foreground))] mt-4">
+          Данные синхронизируются между устройствами
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ─── Main App ──────────────────────────────────────────────────────
 export default function Index() {
-  const [tasks, setTasks] = useLocalStorage<Task[]>("tasks_v1", SAMPLE_TASKS);
+  const [sessionId, setSessionId] = useState<string | null>(() => localStorage.getItem("session_id"));
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<Tab>("tasks");
   const [filterStatus, setFilterStatus] = useState<"all" | TaskStatus>("all");
   const [filterCategory, setFilterCategory] = useState<Category | "all">("all");
+  const [filterScope, setFilterScope] = useState<"all" | "mine" | "shared">("all");
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
-  const [userName, setUserName] = useLocalStorage("user_name", "Пользователь");
-  const [editingName, setEditingName] = useState(false);
-  const [nameInput, setNameInput] = useState(userName);
-  const [notifications, setNotifications] = useLocalStorage("notifications", true);
 
   const [form, setForm] = useState({
     title: "", description: "", priority: "medium" as Priority,
-    category: "work" as Category, dueDate: "",
+    category: "work" as Category, due_date: "", is_shared: false,
   });
 
-  const filteredTasks = tasks.filter(t => {
-    if (filterStatus !== "all" && t.status !== filterStatus) return false;
-    if (filterCategory !== "all" && t.category !== filterCategory) return false;
-    return true;
-  });
+  // Verify session on load
+  useEffect(() => {
+    if (!sessionId) { setLoading(false); return; }
+    authFetch("me", {}, sessionId).then(res => {
+      if (res.user) { setCurrentUser(res.user); }
+      else { setSessionId(null); localStorage.removeItem("session_id"); }
+      setLoading(false);
+    });
+  }, []);
 
-  const doneTasks = tasks.filter(t => t.status === "done");
-  const activeTasks = tasks.filter(t => t.status === "active");
-  const overdueTasks = activeTasks.filter(t => t.dueDate && new Date(t.dueDate) < new Date(new Date().toDateString()));
+  const loadTasks = useCallback(() => {
+    if (!sessionId) return;
+    tasksFetch("list", {}, sessionId).then(res => {
+      if (res.tasks) setTasks(res.tasks);
+    });
+  }, [sessionId]);
 
-  const toggleTask = (id: string) => {
-    setTasks(prev => prev.map(t => t.id === id ? { ...t, status: t.status === "done" ? "active" : "done" } : t));
+  useEffect(() => { if (currentUser) loadTasks(); }, [currentUser, loadTasks]);
+
+  const handleLogin = (user: User, sid: string) => {
+    localStorage.setItem("session_id", sid);
+    setSessionId(sid);
+    setCurrentUser(user);
   };
 
-  const deleteTask = (id: string) => {
+  const handleLogout = () => {
+    if (sessionId) authFetch("logout", {}, sessionId);
+    localStorage.removeItem("session_id");
+    setSessionId(null);
+    setCurrentUser(null);
+    setTasks([]);
+  };
+
+  const toggleTask = async (task: Task) => {
+    const newStatus = task.status === "done" ? "active" : "done";
+    setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: newStatus } : t));
+    await tasksFetch("update", { id: task.id, status: newStatus }, sessionId!);
+  };
+
+  const deleteTask = async (id: number) => {
     setTasks(prev => prev.filter(t => t.id !== id));
+    await tasksFetch("delete", { id }, sessionId!);
   };
 
   const openAdd = () => {
-    setForm({ title: "", description: "", priority: "medium", category: "work", dueDate: "" });
+    setForm({ title: "", description: "", priority: "medium", category: "work", due_date: "", is_shared: false });
     setEditingTask(null);
     setShowAddModal(true);
   };
 
   const openEdit = (task: Task) => {
-    setForm({ title: task.title, description: task.description || "", priority: task.priority, category: task.category, dueDate: task.dueDate || "" });
+    setForm({
+      title: task.title, description: task.description || "",
+      priority: task.priority, category: task.category,
+      due_date: task.due_date || "", is_shared: task.is_shared,
+    });
     setEditingTask(task);
     setShowAddModal(true);
   };
 
-  const saveTask = () => {
+  const saveTask = async () => {
     if (!form.title.trim()) return;
     if (editingTask) {
-      setTasks(prev => prev.map(t => t.id === editingTask.id ? { ...t, ...form } : t));
+      setTasks(prev => prev.map(t => t.id === editingTask.id ? {
+        ...t, ...form, due_date: form.due_date || undefined
+      } : t));
+      await tasksFetch("update", { id: editingTask.id, ...form, due_date: form.due_date || null }, sessionId!);
     } else {
-      const newTask: Task = {
-        id: Date.now().toString(), ...form, status: "active", createdAt: new Date().toISOString().split("T")[0],
-      };
-      setTasks(prev => [newTask, ...prev]);
+      const res = await tasksFetch("create", { ...form, due_date: form.due_date || null }, sessionId!);
+      if (res.task) setTasks(prev => [res.task, ...prev]);
     }
     setShowAddModal(false);
   };
 
-  const formatDate = (d: string) => {
-    const date = new Date(d);
-    return date.toLocaleDateString("ru-RU", { day: "numeric", month: "short" });
-  };
-
+  const formatDate = (d: string) => new Date(d).toLocaleDateString("ru-RU", { day: "numeric", month: "short" });
   const isOverdue = (d?: string) => d && new Date(d) < new Date(new Date().toDateString());
 
+  const filteredTasks = tasks.filter(t => {
+    if (filterStatus !== "all" && t.status !== filterStatus) return false;
+    if (filterCategory !== "all" && t.category !== filterCategory) return false;
+    if (filterScope === "mine" && t.owner_id !== currentUser?.id) return false;
+    if (filterScope === "shared" && !t.is_shared) return false;
+    return true;
+  });
+
+  const myTasks = tasks.filter(t => t.owner_id === currentUser?.id);
+  const doneTasks = tasks.filter(t => t.status === "done");
+  const activeTasks = tasks.filter(t => t.status === "active");
+  const overdueTasks = activeTasks.filter(t => isOverdue(t.due_date));
+  const sharedTasks = tasks.filter(t => t.is_shared);
+  const completionRate = tasks.length ? Math.round((doneTasks.length / tasks.length) * 100) : 0;
+  const upcoming = [...activeTasks].filter(t => t.due_date).sort((a, b) => new Date(a.due_date!).getTime() - new Date(b.due_date!).getTime());
   const catStats = Object.entries(CATEGORIES).map(([key, val]) => ({
-    key: key as Category,
-    label: val.label,
+    key: key as Category, label: val.label,
     total: tasks.filter(t => t.category === key as Category).length,
     done: tasks.filter(t => t.category === key as Category && t.status === "done").length,
   })).filter(c => c.total > 0);
 
-  const completionRate = tasks.length ? Math.round((doneTasks.length / tasks.length) * 100) : 0;
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#f5f5f5] flex items-center justify-center" style={{ fontFamily: "'Golos Text', sans-serif" }}>
+        <div className="w-7 h-7 rounded-lg bg-[hsl(var(--foreground))] animate-pulse" />
+      </div>
+    );
+  }
 
-  const upcoming = [...activeTasks]
-    .filter(t => t.dueDate)
-    .sort((a, b) => new Date(a.dueDate!).getTime() - new Date(b.dueDate!).getTime());
+  if (!currentUser) return <AuthScreen onLogin={handleLogin} />;
 
   return (
     <div className="min-h-screen bg-[#f5f5f5]" style={{ fontFamily: "'Golos Text', sans-serif" }}>
@@ -154,13 +290,11 @@ export default function Index() {
         </div>
       </header>
 
-      {/* Main */}
       <main className="max-w-2xl mx-auto px-4 pb-24">
 
-        {/* Tasks Tab */}
+        {/* ── Tasks ── */}
         {activeTab === "tasks" && (
           <div className="animate-fade-in">
-            {/* Quick Stats */}
             <div className="grid grid-cols-3 gap-3 pt-4 pb-2">
               <div className="bg-white rounded-xl p-3 border border-[hsl(var(--border))]">
                 <div className="text-2xl font-bold">{activeTasks.length}</div>
@@ -176,8 +310,25 @@ export default function Index() {
               </div>
             </div>
 
-            {/* Filters */}
-            <div className="flex gap-2 py-3 overflow-x-auto">
+            {/* Scope filter */}
+            <div className="flex gap-2 pt-2 pb-1 overflow-x-auto">
+              {[
+                { val: "all", label: "Все" },
+                { val: "mine", label: "Мои" },
+                { val: "shared", label: "Общие" },
+              ].map(opt => (
+                <button
+                  key={opt.val}
+                  onClick={() => setFilterScope(opt.val as "all" | "mine" | "shared")}
+                  className={`shrink-0 text-xs px-3 py-1.5 rounded-full border transition-all ${filterScope === opt.val ? "bg-[hsl(var(--foreground))] text-white border-transparent" : "bg-white border-[hsl(var(--border))] text-[hsl(var(--muted-foreground))]"}`}
+                >
+                  {opt.label}
+                  {opt.val === "shared" && sharedTasks.length > 0 && (
+                    <span className={`ml-1.5 text-[10px] px-1 rounded-full ${filterScope === "shared" ? "bg-white/20" : "bg-orange-100 text-orange-600"}`}>{sharedTasks.length}</span>
+                  )}
+                </button>
+              ))}
+              <div className="w-px bg-[hsl(var(--border))] shrink-0 mx-1" />
               {[
                 { val: "all", label: "Все" },
                 { val: "active", label: "Активные" },
@@ -191,20 +342,9 @@ export default function Index() {
                   {opt.label}
                 </button>
               ))}
-              <div className="w-px bg-[hsl(var(--border))] shrink-0 mx-1" />
-              {(Object.entries(CATEGORIES) as [Category, { label: string; color: string }][]).map(([key, val]) => (
-                <button
-                  key={key}
-                  onClick={() => setFilterCategory(filterCategory === key ? "all" : key)}
-                  className={`shrink-0 text-xs px-3 py-1.5 rounded-full border transition-all ${filterCategory === key ? "bg-[hsl(var(--foreground))] text-white border-transparent" : "bg-white border-[hsl(var(--border))] text-[hsl(var(--muted-foreground))]"}`}
-                >
-                  {val.label}
-                </button>
-              ))}
             </div>
 
-            {/* Task List */}
-            <div className="space-y-2">
+            <div className="space-y-2 pt-2">
               {filteredTasks.length === 0 && (
                 <div className="text-center py-16 text-[hsl(var(--muted-foreground))]">
                   <Icon name="Inbox" size={40} className="mx-auto mb-3 opacity-30" />
@@ -215,10 +355,10 @@ export default function Index() {
                 <div
                   key={task.id}
                   className="task-enter bg-white rounded-xl border border-[hsl(var(--border))] p-4 flex gap-3 items-start hover:shadow-sm transition-shadow"
-                  style={{ animationDelay: `${i * 40}ms` }}
+                  style={{ animationDelay: `${i * 30}ms` }}
                 >
                   <button
-                    onClick={() => toggleTask(task.id)}
+                    onClick={() => toggleTask(task)}
                     className={`mt-0.5 w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-all ${task.status === "done" ? "bg-[hsl(var(--foreground))] border-[hsl(var(--foreground))]" : "border-[hsl(var(--border))] hover:border-gray-400"}`}
                   >
                     {task.status === "done" && <Icon name="Check" size={11} className="text-white" />}
@@ -230,12 +370,19 @@ export default function Index() {
                         {task.title}
                       </p>
                       <div className="flex gap-1 shrink-0">
-                        <button onClick={() => openEdit(task)} className="p-1 rounded hover:bg-gray-100 transition-colors">
-                          <Icon name="Pencil" size={13} className="text-[hsl(var(--muted-foreground))]" />
-                        </button>
-                        <button onClick={() => deleteTask(task.id)} className="p-1 rounded hover:bg-red-50 transition-colors">
-                          <Icon name="Trash2" size={13} className="text-[hsl(var(--muted-foreground))]" />
-                        </button>
+                        {task.is_shared && (
+                          <span className="text-[10px] px-1.5 py-0.5 bg-orange-50 text-orange-500 rounded border border-orange-100">общая</span>
+                        )}
+                        {task.owner_id === currentUser?.id && (
+                          <button onClick={() => openEdit(task)} className="p-1 rounded hover:bg-gray-100 transition-colors">
+                            <Icon name="Pencil" size={13} className="text-[hsl(var(--muted-foreground))]" />
+                          </button>
+                        )}
+                        {task.owner_id === currentUser?.id && (
+                          <button onClick={() => deleteTask(task.id)} className="p-1 rounded hover:bg-red-50 transition-colors">
+                            <Icon name="Trash2" size={13} className="text-[hsl(var(--muted-foreground))]" />
+                          </button>
+                        )}
                       </div>
                     </div>
 
@@ -244,18 +391,24 @@ export default function Index() {
                     )}
 
                     <div className="flex items-center gap-2 mt-2 flex-wrap">
-                      <span className={`text-[11px] px-2 py-0.5 rounded-full font-medium ${CATEGORIES[task.category].color}`}>
-                        {CATEGORIES[task.category].label}
+                      <span className={`text-[11px] px-2 py-0.5 rounded-full font-medium ${CATEGORIES[task.category]?.color}`}>
+                        {CATEGORIES[task.category]?.label}
                       </span>
                       <span className="flex items-center gap-1">
-                        <span className={`w-1.5 h-1.5 rounded-full ${PRIORITIES[task.priority].dot}`} />
-                        <span className="text-[11px] text-[hsl(var(--muted-foreground))]">{PRIORITIES[task.priority].label}</span>
+                        <span className={`w-1.5 h-1.5 rounded-full ${PRIORITIES[task.priority]?.dot}`} />
+                        <span className="text-[11px] text-[hsl(var(--muted-foreground))]">{PRIORITIES[task.priority]?.label}</span>
                       </span>
-                      {task.dueDate && (
-                        <span className={`flex items-center gap-1 text-[11px] ${isOverdue(task.dueDate) && task.status === "active" ? "text-red-500" : "text-[hsl(var(--muted-foreground))]"}`}>
+                      {task.is_shared && task.owner_id !== currentUser?.id && (
+                        <span className="text-[11px] text-[hsl(var(--muted-foreground))] flex items-center gap-1">
+                          <Icon name="User" size={10} />
+                          {task.owner_name}
+                        </span>
+                      )}
+                      {task.due_date && (
+                        <span className={`flex items-center gap-1 text-[11px] ${isOverdue(task.due_date) && task.status === "active" ? "text-red-500" : "text-[hsl(var(--muted-foreground))]"}`}>
                           <Icon name="Clock" size={11} />
-                          {formatDate(task.dueDate)}
-                          {isOverdue(task.dueDate) && task.status === "active" && " — просрочено"}
+                          {formatDate(task.due_date)}
+                          {isOverdue(task.due_date) && task.status === "active" && " — просрочено"}
                         </span>
                       )}
                     </div>
@@ -266,7 +419,7 @@ export default function Index() {
           </div>
         )}
 
-        {/* Deadlines Tab */}
+        {/* ── Deadlines ── */}
         {activeTab === "deadlines" && (
           <div className="animate-fade-in pt-4">
             <h2 className="font-semibold text-base mb-1">Сроки выполнения</h2>
@@ -286,26 +439,26 @@ export default function Index() {
                       </div>
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium truncate">{task.title}</p>
-                        <p className="text-xs text-red-400 mt-0.5">{task.dueDate && formatDate(task.dueDate)}</p>
+                        <p className="text-xs text-red-400 mt-0.5">{task.due_date && formatDate(task.due_date)} · {task.owner_name}</p>
                       </div>
-                      <button onClick={() => toggleTask(task.id)} className="shrink-0 text-xs px-3 py-1.5 bg-[hsl(var(--foreground))] text-white rounded-lg">
-                        Готово
-                      </button>
+                      {task.owner_id === currentUser?.id || task.is_shared ? (
+                        <button onClick={() => toggleTask(task)} className="shrink-0 text-xs px-3 py-1.5 bg-[hsl(var(--foreground))] text-white rounded-lg">Готово</button>
+                      ) : null}
                     </div>
                   ))}
                 </div>
               </div>
             )}
 
-            {upcoming.filter(t => !isOverdue(t.dueDate)).length > 0 && (
+            {upcoming.filter(t => !isOverdue(t.due_date)).length > 0 && (
               <div>
                 <div className="flex items-center gap-2 mb-2">
                   <span className="w-2 h-2 rounded-full bg-amber-400" />
                   <span className="text-sm font-medium">Предстоящие</span>
                 </div>
                 <div className="space-y-2">
-                  {upcoming.filter(t => !isOverdue(t.dueDate)).map(task => {
-                    const daysLeft = Math.ceil((new Date(task.dueDate!).getTime() - Date.now()) / 86400000);
+                  {upcoming.filter(t => !isOverdue(t.due_date)).map(task => {
+                    const daysLeft = Math.ceil((new Date(task.due_date!).getTime() - Date.now()) / 86400000);
                     return (
                       <div key={task.id} className="bg-white border border-[hsl(var(--border))] rounded-xl p-4 flex items-center gap-3">
                         <div className="w-8 h-8 rounded-lg bg-amber-50 flex items-center justify-center shrink-0">
@@ -313,9 +466,9 @@ export default function Index() {
                         </div>
                         <div className="flex-1 min-w-0">
                           <p className="text-sm font-medium truncate">{task.title}</p>
-                          <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">{formatDate(task.dueDate!)}</p>
+                          <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">{formatDate(task.due_date!)} · {task.owner_name}</p>
                         </div>
-                        <span className={`text-[11px] px-2 py-0.5 rounded-full ${CATEGORIES[task.category].color}`}>{CATEGORIES[task.category].label}</span>
+                        {task.is_shared && <span className="text-[10px] px-1.5 py-0.5 bg-orange-50 text-orange-500 rounded border border-orange-100">общая</span>}
                       </div>
                     );
                   })}
@@ -332,11 +485,11 @@ export default function Index() {
           </div>
         )}
 
-        {/* Stats Tab */}
+        {/* ── Stats ── */}
         {activeTab === "stats" && (
           <div className="animate-fade-in pt-4">
             <h2 className="font-semibold text-base mb-1">Статистика</h2>
-            <p className="text-sm text-[hsl(var(--muted-foreground))] mb-4">Обзор вашей продуктивности</p>
+            <p className="text-sm text-[hsl(var(--muted-foreground))] mb-4">Обзор продуктивности</p>
 
             <div className="bg-[hsl(var(--foreground))] text-white rounded-2xl p-6 mb-4">
               <div className="text-5xl font-bold">{completionRate}%</div>
@@ -347,6 +500,17 @@ export default function Index() {
               <div className="flex justify-between text-xs opacity-60 mt-1">
                 <span>{doneTasks.length} выполнено</span>
                 <span>{tasks.length} всего</span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 mb-3">
+              <div className="bg-white border border-[hsl(var(--border))] rounded-xl p-4">
+                <div className="text-2xl font-bold">{myTasks.length}</div>
+                <div className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">Моих задач</div>
+              </div>
+              <div className="bg-white border border-[hsl(var(--border))] rounded-xl p-4">
+                <div className="text-2xl font-bold text-orange-500">{sharedTasks.length}</div>
+                <div className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">Общих задач</div>
               </div>
             </div>
 
@@ -386,12 +550,11 @@ export default function Index() {
           </div>
         )}
 
-        {/* Categories Tab */}
+        {/* ── Categories ── */}
         {activeTab === "categories" && (
           <div className="animate-fade-in pt-4">
             <h2 className="font-semibold text-base mb-1">Категории</h2>
-            <p className="text-sm text-[hsl(var(--muted-foreground))] mb-4">Задачи, сгруппированные по категориям</p>
-
+            <p className="text-sm text-[hsl(var(--muted-foreground))] mb-4">Задачи по категориям</p>
             <div className="space-y-4">
               {(Object.entries(CATEGORIES) as [Category, { label: string; color: string }][]).map(([key, val]) => {
                 const catTasks = tasks.filter(t => t.category === key);
@@ -404,35 +567,23 @@ export default function Index() {
                         <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${val.color}`}>{val.label}</span>
                         <span className="text-xs text-[hsl(var(--muted-foreground))]">{done}/{catTasks.length}</span>
                       </div>
-                      <button
-                        onClick={() => { setFilterCategory(key); setActiveTab("tasks"); }}
-                        className="text-xs text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] transition-colors"
-                      >
-                        Все →
-                      </button>
+                      <button onClick={() => { setFilterCategory(key); setActiveTab("tasks"); }} className="text-xs text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] transition-colors">Все →</button>
                     </div>
                     <div className="space-y-2">
                       {catTasks.slice(0, 3).map(task => (
                         <div key={task.id} className="bg-white border border-[hsl(var(--border))] rounded-xl px-4 py-3 flex items-center gap-3">
-                          <button
-                            onClick={() => toggleTask(task.id)}
-                            className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 transition-all ${task.status === "done" ? "bg-[hsl(var(--foreground))] border-[hsl(var(--foreground))]" : "border-[hsl(var(--border))]"}`}
-                          >
+                          <button onClick={() => toggleTask(task)} className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 transition-all ${task.status === "done" ? "bg-[hsl(var(--foreground))] border-[hsl(var(--foreground))]" : "border-[hsl(var(--border))]"}`}>
                             {task.status === "done" && <Icon name="Check" size={9} className="text-white" />}
                           </button>
                           <p className={`text-sm flex-1 truncate ${task.status === "done" ? "line-through text-[hsl(var(--muted-foreground))]" : ""}`}>{task.title}</p>
-                          {task.dueDate && (
-                            <span className={`text-[11px] ${isOverdue(task.dueDate) && task.status === "active" ? "text-red-400" : "text-[hsl(var(--muted-foreground))]"}`}>
-                              {formatDate(task.dueDate)}
-                            </span>
-                          )}
+                          <div className="flex items-center gap-1.5">
+                            {task.is_shared && <span className="text-[10px] text-orange-400">общая</span>}
+                            {task.due_date && <span className={`text-[11px] ${isOverdue(task.due_date) && task.status === "active" ? "text-red-400" : "text-[hsl(var(--muted-foreground))]"}`}>{formatDate(task.due_date)}</span>}
+                          </div>
                         </div>
                       ))}
                       {catTasks.length > 3 && (
-                        <button
-                          onClick={() => { setFilterCategory(key); setActiveTab("tasks"); }}
-                          className="w-full text-xs text-[hsl(var(--muted-foreground))] py-2 text-center hover:text-[hsl(var(--foreground))] transition-colors"
-                        >
+                        <button onClick={() => { setFilterCategory(key); setActiveTab("tasks"); }} className="w-full text-xs text-[hsl(var(--muted-foreground))] py-2 text-center hover:text-[hsl(var(--foreground))] transition-colors">
                           Ещё {catTasks.length - 3} задачи
                         </button>
                       )}
@@ -444,82 +595,31 @@ export default function Index() {
           </div>
         )}
 
-        {/* Profile Tab */}
+        {/* ── Profile ── */}
         {activeTab === "profile" && (
           <div className="animate-fade-in pt-4">
             <div className="bg-white border border-[hsl(var(--border))] rounded-2xl p-5 mb-4">
               <div className="flex items-center gap-4">
                 <div className="w-14 h-14 rounded-2xl bg-[hsl(var(--foreground))] flex items-center justify-center">
-                  <span className="text-white text-xl font-bold">{userName.charAt(0).toUpperCase()}</span>
+                  <span className="text-white text-xl font-bold">{currentUser.display_name.charAt(0).toUpperCase()}</span>
                 </div>
-                <div className="flex-1">
-                  {editingName ? (
-                    <div className="flex gap-2">
-                      <input
-                        className="border border-[hsl(var(--border))] rounded-lg px-3 py-1.5 text-sm flex-1 outline-none focus:border-[hsl(var(--foreground))]"
-                        value={nameInput}
-                        onChange={e => setNameInput(e.target.value)}
-                        onKeyDown={e => { if (e.key === "Enter") { setUserName(nameInput); setEditingName(false); } }}
-                        autoFocus
-                      />
-                      <button
-                        onClick={() => { setUserName(nameInput); setEditingName(false); }}
-                        className="bg-[hsl(var(--foreground))] text-white text-sm px-3 rounded-lg"
-                      >OK</button>
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-2">
-                      <span className="font-semibold text-base">{userName}</span>
-                      <button onClick={() => { setNameInput(userName); setEditingName(true); }} className="p-1 rounded hover:bg-gray-100">
-                        <Icon name="Pencil" size={13} className="text-[hsl(var(--muted-foreground))]" />
-                      </button>
-                    </div>
-                  )}
-                  <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">Всего задач: {tasks.length}</p>
+                <div>
+                  <p className="font-semibold text-base">{currentUser.display_name}</p>
+                  <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">@{currentUser.username}</p>
                 </div>
               </div>
             </div>
 
             <div className="bg-white border border-[hsl(var(--border))] rounded-xl overflow-hidden mb-4">
               <div className="px-4 py-3 border-b border-[hsl(var(--border))]">
-                <span className="text-xs font-semibold text-[hsl(var(--muted-foreground))] uppercase tracking-wider">Настройки</span>
-              </div>
-              <div className="divide-y divide-[hsl(var(--border))]">
-                <div className="px-4 py-3.5 flex items-center justify-between">
-                  <div>
-                    <p className="text-sm font-medium">Напоминания</p>
-                    <p className="text-xs text-[hsl(var(--muted-foreground))]">Уведомления о сроках</p>
-                  </div>
-                  <button
-                    onClick={() => setNotifications(!notifications)}
-                    className={`w-11 h-6 rounded-full transition-all relative ${notifications ? "bg-[hsl(var(--foreground))]" : "bg-gray-200"}`}
-                  >
-                    <span className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all ${notifications ? "left-6" : "left-1"}`} />
-                  </button>
-                </div>
-                <div className="px-4 py-3.5 flex items-center justify-between">
-                  <div>
-                    <p className="text-sm font-medium">Синхронизация</p>
-                    <p className="text-xs text-[hsl(var(--muted-foreground))]">Данные сохраняются локально</p>
-                  </div>
-                  <span className="text-xs text-green-500 font-medium flex items-center gap-1">
-                    <Icon name="Cloud" size={13} />
-                    Активна
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            <div className="bg-white border border-[hsl(var(--border))] rounded-xl overflow-hidden">
-              <div className="px-4 py-3 border-b border-[hsl(var(--border))]">
-                <span className="text-xs font-semibold text-[hsl(var(--muted-foreground))] uppercase tracking-wider">Данные</span>
+                <span className="text-xs font-semibold text-[hsl(var(--muted-foreground))] uppercase tracking-wider">Мои данные</span>
               </div>
               <div className="divide-y divide-[hsl(var(--border))]">
                 {[
-                  { label: "Всего задач", value: tasks.length },
-                  { label: "Выполнено", value: doneTasks.length },
-                  { label: "Активных", value: activeTasks.length },
-                  { label: "Просрочено", value: overdueTasks.length },
+                  { label: "Всего моих задач", value: myTasks.length },
+                  { label: "Выполнено", value: myTasks.filter(t => t.status === "done").length },
+                  { label: "Активных", value: myTasks.filter(t => t.status === "active").length },
+                  { label: "Общих задач (все)", value: sharedTasks.length },
                 ].map(item => (
                   <div key={item.label} className="px-4 py-3 flex items-center justify-between">
                     <span className="text-sm">{item.label}</span>
@@ -528,6 +628,14 @@ export default function Index() {
                 ))}
               </div>
             </div>
+
+            <button
+              onClick={handleLogout}
+              className="w-full bg-white border border-[hsl(var(--border))] rounded-xl py-3 text-sm text-red-500 font-medium hover:bg-red-50 transition-colors flex items-center justify-center gap-2"
+            >
+              <Icon name="LogOut" size={15} />
+              Выйти из аккаунта
+            </button>
           </div>
         )}
       </main>
@@ -557,10 +665,7 @@ export default function Index() {
 
       {/* Add/Edit Modal */}
       {showAddModal && (
-        <div
-          className="fixed inset-0 bg-black/40 z-50 flex items-end sm:items-center justify-center"
-          onClick={e => e.target === e.currentTarget && setShowAddModal(false)}
-        >
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-end sm:items-center justify-center" onClick={e => e.target === e.currentTarget && setShowAddModal(false)}>
           <div className="bg-white rounded-t-2xl sm:rounded-2xl w-full sm:max-w-md p-5 animate-scale-in">
             <div className="flex items-center justify-between mb-4">
               <h3 className="font-semibold text-base">{editingTask ? "Редактировать задачу" : "Новая задача"}</h3>
@@ -584,15 +689,10 @@ export default function Index() {
                 value={form.description}
                 onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
               />
-
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="text-xs text-[hsl(var(--muted-foreground))] mb-1 block">Приоритет</label>
-                  <select
-                    className="w-full border border-[hsl(var(--border))] rounded-xl px-3 py-2 text-sm outline-none focus:border-[hsl(var(--foreground))] bg-white"
-                    value={form.priority}
-                    onChange={e => setForm(f => ({ ...f, priority: e.target.value as Priority }))}
-                  >
+                  <select className="w-full border border-[hsl(var(--border))] rounded-xl px-3 py-2 text-sm outline-none focus:border-[hsl(var(--foreground))] bg-white" value={form.priority} onChange={e => setForm(f => ({ ...f, priority: e.target.value as Priority }))}>
                     <option value="high">Высокий</option>
                     <option value="medium">Средний</option>
                     <option value="low">Низкий</option>
@@ -600,26 +700,30 @@ export default function Index() {
                 </div>
                 <div>
                   <label className="text-xs text-[hsl(var(--muted-foreground))] mb-1 block">Категория</label>
-                  <select
-                    className="w-full border border-[hsl(var(--border))] rounded-xl px-3 py-2 text-sm outline-none focus:border-[hsl(var(--foreground))] bg-white"
-                    value={form.category}
-                    onChange={e => setForm(f => ({ ...f, category: e.target.value as Category }))}
-                  >
+                  <select className="w-full border border-[hsl(var(--border))] rounded-xl px-3 py-2 text-sm outline-none focus:border-[hsl(var(--foreground))] bg-white" value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value as Category }))}>
                     {(Object.entries(CATEGORIES) as [Category, { label: string; color: string }][]).map(([key, val]) => (
                       <option key={key} value={key}>{val.label}</option>
                     ))}
                   </select>
                 </div>
               </div>
-
               <div>
                 <label className="text-xs text-[hsl(var(--muted-foreground))] mb-1 block">Срок выполнения</label>
-                <input
-                  type="date"
-                  className="w-full border border-[hsl(var(--border))] rounded-xl px-3 py-2 text-sm outline-none focus:border-[hsl(var(--foreground))] bg-white"
-                  value={form.dueDate}
-                  onChange={e => setForm(f => ({ ...f, dueDate: e.target.value }))}
-                />
+                <input type="date" className="w-full border border-[hsl(var(--border))] rounded-xl px-3 py-2 text-sm outline-none focus:border-[hsl(var(--foreground))] bg-white" value={form.due_date} onChange={e => setForm(f => ({ ...f, due_date: e.target.value }))} />
+              </div>
+
+              {/* Shared toggle */}
+              <div className="flex items-center justify-between p-3 bg-[hsl(var(--muted))] rounded-xl">
+                <div>
+                  <p className="text-sm font-medium">Общая задача</p>
+                  <p className="text-xs text-[hsl(var(--muted-foreground))]">Видна всем пользователям</p>
+                </div>
+                <button
+                  onClick={() => setForm(f => ({ ...f, is_shared: !f.is_shared }))}
+                  className={`w-11 h-6 rounded-full transition-all relative ${form.is_shared ? "bg-orange-400" : "bg-gray-300"}`}
+                >
+                  <span className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all ${form.is_shared ? "left-6" : "left-1"}`} />
+                </button>
               </div>
 
               <button
